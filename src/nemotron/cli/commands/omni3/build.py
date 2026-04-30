@@ -185,6 +185,23 @@ def _make_build_script(
     # add ``parallel`` here and accept the dnf workaround complexity.
     return f"""set -euo pipefail
 export TERM=dumb NO_COLOR=1
+# The build container is Fedora-based but slurm inherits the host's SSL_CERT_*
+# env vars, which on this Ubuntu-derived login node point at
+# /usr/lib/ssl/certs/ca-certificates.crt — a path that does not exist inside
+# the Fedora container, causing curl to fail with error 77 "error setting
+# certificate file". Drop the inherited paths and let curl/openssl pick up
+# the container-native bundle (/etc/pki/tls/...).
+unset SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE REQUESTS_CA_BUNDLE
+# XDG_RUNTIME_DIR is propagated from the host (e.g. /run/user/<uid>) but does
+# not exist inside the build container. Podman 5 uses it to find
+# $XDG_RUNTIME_DIR/containers/auth.json before falling back to other auth
+# locations; with the host path missing it bails out and treats nvcr.io
+# images as anonymous, getting 403 on the gated `nvidian/nemo` repo.
+# Drop XDG_RUNTIME_DIR and pin REGISTRY_AUTH_FILE to the path our auth.json
+# is mounted at so podman finds the credentials we materialized from
+# ~/.config/enroot/.credentials.
+unset XDG_RUNTIME_DIR
+export REGISTRY_AUTH_FILE=/root/.config/containers/auth.json
 echo "[omni3-build] installing enroot v{enroot_version} runtime deps ..."
 # dnf5 on Fedora 41 has a string-handling bug in its progress reporter
 # that crashes the *final* transaction step (``std::length_error`` from
@@ -336,6 +353,15 @@ def _execute_slurm(
             user=_get("user"),
             job_dir=remote_job_dir,
         )
+    else:
+        # On-cluster submission (no SSH bounce). nemo_run.SlurmExecutor needs a
+        # tunnel object — falling through with tunnel=None blows up at
+        # SlurmExecutor.assign(). LocalTunnel(job_dir="") makes its
+        # ``_set_job_dir`` fall through to ``$NEMORUN_HOME/experiments/...``,
+        # which matches Experiment._exp_dir so the sbatch file ends up where
+        # ``sbatch`` looks for it. Set NEMORUN_HOME to a lustre path to keep
+        # this off the home-dir quota.
+        tunnel = run.LocalTunnel(job_dir="")
 
     # CodePackager rsyncs the repo to ``$remote_job_dir/<exp>/code``,
     # which gets mounted at ``REMOTE_CODE_ROOT`` inside the container.

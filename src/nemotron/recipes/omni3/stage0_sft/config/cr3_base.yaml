@@ -1,0 +1,65 @@
+# CR3 SOP-finetuning base config for Nemotron-3-Nano-Omni-30B-A3B-Reasoning.
+#
+# Sized for a single node × 8 × A100 80 GB. The shipped Nemotron configs
+# (default.yaml, valor32k.yaml) assume 2+ nodes (TP=4 × EP=4 = 16 GPUs); on
+# 1 node we drop to TP=2 × EP=4 = 8 GPUs and rely on
+# use_distributed_optimizer + activation checkpointing + frozen ViT/audio
+# to fit 30B full-LM SFT in the per-GPU 80 GB budget. See
+# /home/chrislin/.claude/plans/you-are-the-expert-floofy-rabbit.md for the
+# memory math and OOM triage ladder.
+#
+# Per-run overrides come from environment variables, set by the per-config
+# YAMLs and sbatch wrappers under cr3-nemotron/sbatch/<dataset>/:
+#   OMNI3_MEGATRON_CHECKPOINT  pretrain ckpt (output of `omni3 model import pretrain`)
+#   CR3_ENERGON_PATH           Energon dataset directory for this run
+#   CR3_CKPT_SAVE              where iter_NNNN/ checkpoints land
+#   CR3_TRAIN_ITERS            iteration budget (4000 for 10-epoch ds, 12000 for tp00303)
+#   CR3_LM_LR                  language-model peak LR (1.5e-5 or 1e-6 — CR3 sweep)
+
+run:
+  nproc_per_node: 8
+  env:
+    container: /home/${oc.env:USER}/.cache/nemotron/containers/omni3-sft.sqsh
+    workdir: /workspace/Megatron-Bridge
+    env_vars:
+      PYTORCH_ALLOC_CONF: expandable_segments:True
+
+recipe:
+  name: nemotron_omni_valor32k_sft_config
+  step_func: nemotron_omni_step
+
+checkpoint:
+  pretrained_checkpoint: ${oc.env:OMNI3_MEGATRON_CHECKPOINT}
+  save: ${oc.env:CR3_CKPT_SAVE}
+  save_interval: 200
+  finetune: true
+
+dataset:
+  path: ${oc.env:CR3_ENERGON_PATH}
+  seq_length: 8192
+
+model:
+  tensor_model_parallel_size: 2
+  expert_model_parallel_size: 4
+  expert_tensor_parallel_size: 1
+  pipeline_model_parallel_size: 1
+  seq_length: 8192
+  bf16: true
+  use_distributed_optimizer: true
+  recompute_granularity: full
+  recompute_method: uniform
+  freeze_language_model: false
+  freeze_vision_model: true
+  freeze_vision_projection: false
+  freeze_sound_encoder: true
+  freeze_sound_projection: true
+
+train:
+  train_iters: ${oc.env:CR3_TRAIN_ITERS,4000}
+  global_batch_size: 32
+  micro_batch_size: 1
+  optimizer:
+    lr: ${oc.env:CR3_LM_LR,1.5e-5}
+    weight_decay: 0.01
+    warmup_iters: 20
+    grad_clip: 1.0

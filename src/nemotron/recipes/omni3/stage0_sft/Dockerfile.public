@@ -1,0 +1,166 @@
+# syntax=docker/dockerfile:1.7
+#
+# Omni3 SFT container — public-base alternative to ./Dockerfile.
+#
+# Identical end-state (Megatron-Bridge nemotron_3_omni + Megatron-LM
+# nemotron_3_omni installed into /workspace/Megatron-Bridge/.venv) but built
+# from a base image that does NOT require ``nvcr.io/nvidian/`` access:
+#
+#   cuda-dl-base:25.05-cuda12.9-devel-ubuntu24.04   (public, anonymous-pullable)
+#
+# instead of:
+#
+#   nvcr.io/nvidian/nemo:26.04.rc7                  (NV-internal, gated)
+#
+# The trade-off is that the public base image doesn't ship NeMo or torch,
+# so we install them explicitly here. Mirrors the layer pattern from the
+# stage1_rl/Dockerfile (which already builds against the same public base).
+#
+# Layer order:
+#   base       — cuda-dl-base + apt deps + uv + python 3.12
+#   torch      — pre-install torch 2.9 (Megatron-Bridge lockfile expects torch
+#                to be already importable; without this ``uv sync --locked`` fails)
+#   sources    — clone Megatron-Bridge @ nemotron_3_omni + 3rdparty/Megatron-LM @
+#                nemotron_3_omni
+#   deps       — uv sync --locked Megatron-Bridge's deps into the venv
+#   verify     — import sanity check (matches the upstream Dockerfile's tail)
+
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:25.05-cuda12.9-devel-ubuntu24.04
+ARG UV_VERSION=0.9.7
+ARG PYTHON_VERSION=3.12
+# Torch wheel that matches cuda-dl-base 12.9. Bump as Megatron-Bridge bumps.
+ARG TORCH_VERSION=2.9.1
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu129
+
+# ---------------------------------------------------------------------------
+# Stage 1: base — apt deps + uv + python
+# ---------------------------------------------------------------------------
+FROM ${BASE_IMAGE} AS base
+
+ARG UV_VERSION
+ARG PYTHON_VERSION
+
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN <<EOF bash -exu -o pipefail
+apt-get update
+apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    gnupg \
+    jq \
+    less \
+    rsync \
+    vim \
+    wget \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ffmpeg
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+EOF
+
+# Install uv + matching cpython. uv lives under /root/.local/bin to match
+# the RL Dockerfile pattern; we put it on PATH so subsequent layers see it.
+ENV PATH="/root/.local/bin:$PATH"
+RUN curl -LsSf https://astral.sh/uv/${UV_VERSION}/install.sh | sh && \
+    uv python install ${PYTHON_VERSION}
+
+# Megatron-Bridge's lockfile expects torch to be importable from the venv.
+# We pre-install it here so ``uv sync --locked`` below succeeds without
+# trying to resolve torch from PyPI's torch-less cu129 stub.
+ENV UV_PROJECT_ENVIRONMENT=/workspace/Megatron-Bridge/.venv
+ENV UV_LINK_MODE=copy
+RUN mkdir -p /workspace && uv venv --python ${PYTHON_VERSION} /workspace/Megatron-Bridge/.venv
+
+# ---------------------------------------------------------------------------
+# Stage 2: torch — install matching torch wheel into the workspace venv
+# ---------------------------------------------------------------------------
+FROM base AS torch
+
+ARG TORCH_VERSION
+ARG TORCH_INDEX_URL
+
+# ``--system-site-packages`` is not used here (the public base venv is
+# clean), so torch is installed directly into /workspace/Megatron-Bridge/.venv.
+RUN VIRTUAL_ENV=/workspace/Megatron-Bridge/.venv uv pip install \
+        --index-url ${TORCH_INDEX_URL} \
+        torch==${TORCH_VERSION} torchvision torchaudio
+
+# Smoke-test torch + CUDA visibility (CUDA initialization is deferred until
+# first access; just import-checks here).
+RUN VIRTUAL_ENV=/workspace/Megatron-Bridge/.venv uv run python -c \
+    "import torch; print('torch', torch.__version__, 'cuda compiled:', torch.version.cuda)"
+
+# ---------------------------------------------------------------------------
+# Stage 3: sources — clone Megatron-Bridge + Megatron-LM at the omni branches
+# ---------------------------------------------------------------------------
+FROM torch AS sources
+
+# git clone (not ADD) so .git survives — required for the nested
+# Megatron-LM remote-add + fetch below.
+RUN git clone --recurse-submodules --branch nemotron_3_omni \
+        https://github.com/NVIDIA-NeMo/Megatron-Bridge.git /workspace/Megatron-Bridge
+
+WORKDIR /workspace/Megatron-Bridge
+
+# Megatron-Bridge vendors Megatron-LM as a 3rdparty submodule. The submodule
+# tracks NVIDIA/Megatron-LM @ nemotron_3_omni — we add the upstream remote
+# and fetch that branch so all the nemotron_omni recipe code resolves.
+RUN cd 3rdparty/Megatron-LM && \
+    (git remote add adlr https://github.com/NVIDIA/Megatron-LM.git || true) && \
+    git fetch adlr nemotron_3_omni && \
+    git checkout adlr/nemotron_3_omni
+
+# ---------------------------------------------------------------------------
+# Stage 4: deps — uv sync Megatron-Bridge's pyproject into the venv
+# ---------------------------------------------------------------------------
+FROM sources AS deps
+
+# Run from the repo root so uv finds pyproject.toml + uv.lock.
+WORKDIR /workspace/Megatron-Bridge
+
+# We want to honor the upstream lockfile (so the NV-supported dep set is
+# what we get) but with one override: torch is already installed in the
+# venv from stage 2. ``uv sync --locked --no-install-project --inexact``
+# layers the locked deps on top without re-installing torch (--inexact
+# leaves anything not in the lockfile alone).
+#
+# If ``uv sync --locked`` complains because the lockfile pins a torch that
+# differs from TORCH_VERSION, fall back to ``uv sync`` (no --locked) which
+# resolves freshly using our pre-installed torch as a constraint. Comment
+# out one of the two lines below depending on which works for the omni
+# branch you're building.
+RUN VIRTUAL_ENV=/workspace/Megatron-Bridge/.venv uv sync \
+        --link-mode copy \
+        --locked \
+        --inexact \
+    || VIRTUAL_ENV=/workspace/Megatron-Bridge/.venv uv sync \
+        --link-mode copy \
+        --inexact
+
+# ---------------------------------------------------------------------------
+# Stage 5: release — finalise PATH + import sanity (mirrors upstream tail)
+# ---------------------------------------------------------------------------
+FROM deps AS release
+
+# Make the uv-synced venv the default Python for the image so tooling
+# (torchrun, the SFT train.py CLI) doesn't need a uv-run prefix.
+ENV PATH=/workspace/Megatron-Bridge/.venv/bin:$PATH
+ENV PYTHONPATH=/workspace/Megatron-Bridge/src:/workspace/Megatron-Bridge/3rdparty/Megatron-LM
+ENV UV_PROJECT_ENVIRONMENT=/workspace/Megatron-Bridge/.venv
+
+# Same import sanity as the upstream Dockerfile. If a layer above silently
+# dropped a transitive dep, this surfaces it at build time rather than at
+# train time.
+RUN python -c "import megatron.core, megatron.bridge" && \
+    python -c "from megatron.bridge.recipes.nemotron_omni import \
+        nemotron_omni_cord_v2_sft_config, \
+        nemotron_omni_cord_v2_peft_config, \
+        nemotron_omni_valor32k_sft_config, \
+        nemotron_omni_valor32k_peft_config"
+
+WORKDIR /workspace/Megatron-Bridge

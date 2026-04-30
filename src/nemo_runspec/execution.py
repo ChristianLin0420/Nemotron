@@ -548,7 +548,12 @@ def create_executor(
     # Slurm executor setup
     remote_job_dir = _get_env(env, "remote_job_dir")
 
-    # Build SSH tunnel if configured
+    # Build tunnel:
+    #   tunnel = "ssh"     → real SSHTunnel (paramiko) for remote submission
+    #   anything else      → LocalTunnel for on-cluster submission
+    # Upstream nemo_runspec sets tunnel=None when not "ssh", which breaks
+    # nemo_run.SlurmExecutor (it dereferences tunnel._set_job_dir). LocalTunnel
+    # is the correct default for jobs submitted from the cluster login node.
     tunnel = None
     if _get_env(env, "tunnel") == "ssh":
         tunnel = run.SSHTunnel(
@@ -556,6 +561,12 @@ def create_executor(
             user=_get_env(env, "user"),
             job_dir=remote_job_dir,
         )
+    else:
+        # LocalTunnel(job_dir="") makes ``_set_job_dir`` use
+        # ``$NEMORUN_HOME/experiments/<title>/<id>``, which lines up with
+        # Experiment._exp_dir so the generated sbatch file is in the path
+        # ``sbatch`` is invoked on. NEMORUN_HOME should be set to lustre.
+        tunnel = run.LocalTunnel(job_dir="")
 
     # Container image handling (env.toml > config YAML > SPEC.image fallback)
     container_image = _get_env(env, "container_image") or _get_env(env, "container") or default_image
