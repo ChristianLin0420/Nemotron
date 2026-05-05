@@ -349,13 +349,30 @@ def _build_nv_meta(dataset_path: Path, split_shards: dict[str, list[str]]) -> in
     )
     conn.execute("CREATE INDEX idx_samples_sample_key ON samples(sample_key)")
 
+    # The fields each sample writes — their names come from the writer's
+    # ``DATASET_YAML["field_map"]`` and become the file extensions on the
+    # WebDataset side. We strip the longest matching extension to recover
+    # ``__key__``; splitting at the first ``.`` would mangle keys that
+    # themselves contain ``.`` (e.g. version-tagged split labels like
+    # ``ASSY17_v1.2_mcq``).
+    KNOWN_FIELDS = ("conversation.json", "video.mp4", "audio.wav")
+
+    def _key_of(member_name: str) -> str:
+        for f in KNOWN_FIELDS:
+            suffix = "." + f
+            if member_name.endswith(suffix):
+                return member_name[: -len(suffix)]
+        # Fallback for unexpected members (e.g. PaxHeader entries) — group
+        # them by the first dot-segment so they don't crash the indexer.
+        return member_name.split(".", 1)[0]
+
     shard_counts: dict[str, int] = {}
     for tar_file_id, shard_name in enumerate(ordered_shards):
         with tarfile.open(dataset_path / shard_name) as tf:
             members = tf.getmembers()
         groups: dict[str, list] = defaultdict(list)
         for m in members:
-            groups[m.name.split(".", 1)[0]].append(m)
+            groups[_key_of(m.name)].append(m)
         ordered_groups = sorted(groups.items(), key=lambda kv: min(m.offset for m in kv[1]))
         rows = []
         for sample_index, (sample_key, mems) in enumerate(ordered_groups):

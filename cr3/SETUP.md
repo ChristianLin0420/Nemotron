@@ -185,6 +185,97 @@ bash Nemotron/cr3/eval/run_all_evals.sh
 
 See `Nemotron/cr3/README.md` for the full data + training + eval pipeline.
 
+## 10. Training inside an interactive container
+
+Steps 1–8 leave you with a built `omni3-sft.sqsh`, a Megatron-format pretrain
+checkpoint at `$OMNI3_MEGATRON_CHECKPOINT`, and the lustre paths exported by
+`env-setup.sh`. This section is the hand-driven equivalent of the
+`sbatch_assy17_*.sh` wrappers — useful when you want to inspect a training
+run before committing it to a 4-hour batch window.
+
+### 10.1 Allocate the node
+
+```bash
+source Nemotron/cr3/env-setup.sh    # if not already in this shell
+bash   Nemotron/cr3/interactive.sh
+```
+
+`interactive.sh` srun's `--gpus=8` on `interactive_singlenode`, mounts
+`$HOME:/root`, `/lustre:/lustre`, and the repo at `/workspace/Nemotron`,
+then drops you at `/workspace/Nemotron/cr3` (`cr3/interactive.sh:44-68`).
+All env vars from `env-setup.sh` are inherited.
+
+### 10.2 Build the Energon dataset (once per CR3 TOML)
+
+The trainer only ever loads `$CR3_ENERGON_PATH`; the CR3 TOML is converted
+ahead of time. Inside the container:
+
+```bash
+RUN_NAME=assy17_lr15e5_lr1e6_dmcq2p2n_ds1
+TOML=/workspace/cosmos-reason2/examples/cosmos_rl/configs/cr3-8b/assy17/${RUN_NAME}.toml
+ENERGON=$CR3_ENERGON_ROOT/assy17/${RUN_NAME}
+
+python /workspace/Nemotron/cr3/scripts/cr3_to_energon.py \
+    --cr3-toml "$TOML" \
+    --output   "$ENERGON" \
+    --val-fraction 0.1
+```
+
+`cosmos-reason2` is auto-mounted by `interactive.sh` if its sibling clone
+exists (`cr3/interactive.sh:46`). Skip this step if `$ENERGON/.nv-meta/`
+already exists from a previous build — the converter wipes the output dir
+on rebuild.
+
+### 10.3 Export the per-run env vars
+
+These are the four `${oc.env:...}` keys `cr3_base.yaml` consumes
+(lines 32, 33, 38, 58, 62), plus the alloc / TLS hygiene that the production
+sbatch sets (`sbatch/assy17/sbatch_assy17_lr15e5_lr1e6_dmcq2p2n_ds1.sh:61-67`):
+
+```bash
+export CR3_ENERGON_PATH="$ENERGON"
+export CR3_CKPT_SAVE="$CR3_CKPT_ROOT/assy17/${RUN_NAME}"
+export CR3_TRAIN_ITERS=4000           # production budget; 10 for a quick check
+export CR3_LM_LR=1.5e-05               # match the per-run YAML
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+unset SSL_CERT_FILE SSL_CERT_DIR XDG_RUNTIME_DIR
+```
+
+`OMNI3_MEGATRON_CHECKPOINT` is already set by `env-setup.sh`; override it
+inline if you're pointing at a different ckpt.
+
+### 10.4 Launch torchrun
+
+Same command the production sbatch uses (`sbatch_assy17_*.sh:71-72`) — no
+Hydra overrides because the per-run YAML extends `cr3_base.yaml`:
+
+```bash
+cd /workspace/Nemotron/src/nemotron/recipes/omni3/stage0_sft
+torchrun --nproc-per-node=8 train.py \
+    --config config/cr3/assy17/${RUN_NAME}.yaml
+```
+
+Iterations land under `$CR3_CKPT_SAVE/iter_NNNNNNN/`; default
+`checkpoint.save_interval=200` from `cr3_base.yaml`. For an interactive
+session you might Ctrl-C, append `checkpoint.save_interval=50` to the
+torchrun line so you don't lose progress.
+
+### 10.5 Quick smoke before the real run
+
+To validate the wiring without burning the 4-hour window, use the helper that
+drops `seq_length` / `batch_size` / `recompute_num_layers`
+(`cr3/test/scripts/run_train_smoke.sh:77-85`):
+
+```bash
+CR3_TRAIN_ITERS=10 bash /workspace/Nemotron/cr3/test/scripts/run_train_smoke.sh
+```
+
+It re-applies the `fusions.py` apex-disable patch on every container boot
+(needed because `--container-writable` doesn't persist between allocations)
+and `uv pip install`s `pydantic-settings` into the image's `.venv` (which
+ships python but no pip — `uv` at `/root/.local/bin/uv` covers it). Both
+are no-ops when already present.
+
 ---
 
 ## Quick troubleshooting
@@ -198,3 +289,5 @@ See `Nemotron/cr3/README.md` for the full data + training + eval pipeline.
 | `sbatch: error: Unable to open file ... _sbatch.sh` | LocalTunnel was constructed with a non-empty `job_dir`; verify the patch in `omni3/build.py` uses `LocalTunnel(job_dir="")` |
 | `curl: (77) error setting certificate file: /usr/lib/ssl/...` | host's Debian SSL cert path bleeding into the Fedora build container — verify `unset SSL_CERT_FILE SSL_CERT_DIR` is in the build script |
 | `403 (Forbidden)` pulling `nvcr.io/nvidian/...` | NGC key in `~/.config/enroot/.credentials` doesn't have access to the internal repo — ask the team or use a teammate's pre-built sqsh |
+| `OverridesError: Could not override 'train.optimizer.use_distributed_optimizer'` from torchrun | the key is currently in `model:` of `cr3_base.yaml` and gets silently dropped; either move it to the `optimizer:` section in the YAML, or prefix the CLI override with `+` (Hydra's "add missing key" syntax) |
+| `/workspace/Megatron-Bridge/.venv/bin/pip: No such file or directory` inside the container | the public image's venv ships python without pip; install via `uv pip install --python /workspace/Megatron-Bridge/.venv/bin/python <pkg>` instead — `uv` is at `/root/.local/bin/uv` |
