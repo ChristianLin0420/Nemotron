@@ -3,7 +3,8 @@
 #
 # Performs two steps:
 #   1. Convert tp00302_smoke.toml -> Energon WebDataset shards
-#      (idempotent: skipped if .nv-meta/dataset.yaml already exists).
+#      (idempotent: skipped if .nv-meta/dataset.yaml already exists AND
+#      the existing shards don't carry pre-fc4ec4c dotted-key members).
 #   2. Delegate to cr3/test/scripts/run_train_smoke.sh for a 10-iter
 #      torchrun training pass (A40 OOM-safe overrides live there).
 #
@@ -50,9 +51,33 @@ command -v torchrun >/dev/null 2>&1 || { echo "ERROR: torchrun not on PATH (are 
 # 1. Convert TOML -> Energon (idempotent)
 # ---------------------------------------------------------------------------
 DATASET_YAML="$CR3_ENERGON_PATH/.nv-meta/dataset.yaml"
+
+# Detect pre-fc4ec4c shards (dot-laden tar member stems collapse every
+# sample in a shard to one __key__ under energon's first-dot regex, then
+# training crashes with `FieldAccessError: Cannot access 'conversation.json'`).
+# Stale path: rm -rf the dataset so the next branch regenerates it.
+STALE_SHARDS=0
 if [[ -f "$DATASET_YAML" ]]; then
+    FIRST_TAR="$(find "$CR3_ENERGON_PATH" -maxdepth 1 -name 'train-shard-*.tar' -print -quit 2>/dev/null || true)"
+    if [[ -n "$FIRST_TAR" ]]; then
+        FIRST_MEMBER="$(tar -tf "$FIRST_TAR" 2>/dev/null | head -1 || true)"
+        STEM="$FIRST_MEMBER"
+        for ext in conversation.json audio.wav video.mp4; do
+            STEM="${STEM%.$ext}"
+        done
+        if [[ "$STEM" == *.* ]]; then
+            STALE_SHARDS=1
+        fi
+    fi
+fi
+
+if [[ -f "$DATASET_YAML" && $STALE_SHARDS -eq 0 ]]; then
     echo "[convert] skip: $DATASET_YAML already exists"
 else
+    if [[ $STALE_SHARDS -eq 1 ]]; then
+        echo "[convert] stale dotted-key shards at $CR3_ENERGON_PATH — wiping and regenerating (see commit fc4ec4c)"
+        rm -rf "$CR3_ENERGON_PATH"
+    fi
     echo "[convert] $CR3_TOML -> $CR3_ENERGON_PATH"
     mkdir -p "$(dirname "$CR3_ENERGON_PATH")"
     OVERRIDE_ARGS=()

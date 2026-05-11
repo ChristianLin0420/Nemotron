@@ -357,6 +357,37 @@ def _write_tar_indexes(dataset_dir: Path) -> None:
         logger.info("energon prepare: %s", result.stdout.strip())
 
 
+def _first_tar_member_has_dotted_stem(dataset_dir: Path) -> bool:
+    """True iff the first ``train-shard-*.tar`` has a pre-fc4ec4c dotted stem.
+
+    Old-format shards (written before commit fc4ec4c) carry tar members like
+    ``ASSY17_v1.4.1_gqas_000000_00000000.conversation.json``. Energon's
+    webdataset regex ``^(.+?)\\.(...)`` splits on the FIRST ``.``, so every
+    sample in such a shard collapses to ``__key__='ASSY17_v1'`` and training
+    crashes at the first batch with ``FieldAccessError: Cannot access
+    'conversation.json'``. New-format stems are dot-free, so we detect the
+    bad case by stripping the known field extension from the first member
+    and asking whether anything remains with a ``.`` in it.
+    """
+    first = next(iter(sorted(dataset_dir.glob("train-shard-*.tar"))), None)
+    if first is None:
+        return False
+    try:
+        with tarfile.open(first) as tf:
+            m = tf.next()
+    except (tarfile.TarError, OSError):
+        return False
+    if m is None:
+        return False
+    stem = m.name
+    for ext in ("conversation.json", "audio.wav", "video.mp4"):
+        suffix = "." + ext
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    return "." in stem
+
+
 def _build_nv_meta(dataset_path: Path, split_shards: dict[str, list[str]]) -> int:
     """Write .nv-meta/ — index.sqlite, .info.yaml, split.yaml, dataset.yaml.
 
@@ -624,10 +655,15 @@ def main() -> int:
         run_name = _toml_to_run_name(toml_path)
         out = out_root / dataset / run_name
         if (out / ".nv-meta" / "dataset.yaml").exists():
-            logger.info("[%s] skip — .nv-meta/dataset.yaml already present at %s",
-                        toml_path.name, out)
-            summary.append({"toml": str(toml_path), "output": str(out), "skipped": True})
-            continue
+            if _first_tar_member_has_dotted_stem(out):
+                logger.warning("[%s] stale dotted-key shards at %s — "
+                               "regenerating (see commit fc4ec4c)",
+                               toml_path.name, out)
+            else:
+                logger.info("[%s] skip — .nv-meta/dataset.yaml already present at %s",
+                            toml_path.name, out)
+                summary.append({"toml": str(toml_path), "output": str(out), "skipped": True})
+                continue
         tmp_audio_dir = args.tmp_audio_dir or (out / ".audio_cache")
         tmp_audio_dir.mkdir(parents=True, exist_ok=True)
         try:
