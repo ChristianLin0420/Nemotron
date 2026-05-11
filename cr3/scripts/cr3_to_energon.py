@@ -308,7 +308,13 @@ def _stratified_split(records: list[tuple[str, dict, Path]], val_fraction: float
 
 
 def _write_shard(shard_path: Path, samples: list[dict]) -> int:
-    """Write one Energon-compatible tar shard. Mirrors WebDatasetShardStage._write_one_shard."""
+    """Write one Energon-compatible tar shard. Mirrors WebDatasetShardStage._write_one_shard.
+
+    Also writes the ``.tar.idx`` byte-offset index that Energon's
+    ``TarIndexReader`` opens at training time. Without this sidecar,
+    training fails with ``FileNotFoundError: train-shard-NNNNNN.tar.idx``
+    at the first batch fetch.
+    """
     import webdataset as wds  # local — only available inside omni3-sft container
     written = 0
     shard_path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,7 +322,27 @@ def _write_shard(shard_path: Path, samples: list[dict]) -> int:
         for sample in samples:
             sink.write(sample)
             written += 1
+    _write_tar_index(shard_path)
     return written
+
+
+def _write_tar_index(shard_path: Path) -> None:
+    """Generate ``<shard>.tar.idx`` for Energon's random-access tar reader.
+
+    Falls back gracefully if the megatron-energon API doesn't expose the
+    helper (the converter still produces usable shards; the operator
+    needs to run ``energon prepare`` manually in that case).
+    """
+    try:
+        from megatron.energon.flavors.webdataset.itar import write_tar_index  # type: ignore
+    except ImportError:
+        logger.warning(
+            "megatron.energon.flavors.webdataset.itar.write_tar_index not "
+            "available; run `energon prepare %s` after conversion to "
+            "generate the .tar.idx sidecars.", shard_path.parent
+        )
+        return
+    write_tar_index(shard_path)
 
 
 def _build_nv_meta(dataset_path: Path, split_shards: dict[str, list[str]]) -> int:
