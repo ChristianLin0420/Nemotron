@@ -618,9 +618,13 @@ def convert_one(toml_path: Path, output: Path, val_fraction: float,
     _emit("train", train_recs)
     _emit("val",   val_recs)
 
-    _write_tar_indexes(output)
-
+    # Order matters: `energon prepare --tar-index-only` asserts that
+    # `.nv-meta/.info.yaml` already exists (see energon/tools/prepare.py:141),
+    # so build the nv-meta first and only then call out to energon for the
+    # .tar.idx sidecars.
     total = _build_nv_meta(output, split_shards)
+
+    _write_tar_indexes(output)
     logger.info("[%s] DONE: %d samples across %d shards under %s",
                 toml_path.name, total,
                 sum(len(v) for v in split_shards.values()), output)
