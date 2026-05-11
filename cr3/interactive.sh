@@ -32,11 +32,20 @@ IMAGE="${OMNI3_SFT_IMAGE:-christianlin0420/omni3-sft:public}"
 CONTAINER_IMAGE="${IMAGE}"
 
 # Mounts:
-#   $HOME:/root          — for ~/.cache/huggingface, ~/.netrc, etc.
-#   /lustre:/lustre      — datasets, checkpoints, scratch
-#   Nemotron repo        — code under test (cr3/ + recipes/ + src/)
-#   cosmos-reason2 repo  — source of truth for CR3 TOMLs and JSON datasets
-MOUNTS="$HOME:/root,/lustre:/lustre"
+#   /lustre:/lustre                                    — datasets, checkpoints, scratch
+#   $HOME/.cache/huggingface:/root/.cache/huggingface  — HF model + token cache (mirrors docker-interactive.sh)
+#   Nemotron repo                                      — code under test (cr3/ + recipes/ + src/)
+#   cosmos-reason2 repo                                — source of truth for CR3 TOMLs and JSON datasets
+#
+# DO NOT mount $HOME:/root wholesale — the image stores uv's Python install
+# under /root/.local/share/uv/python/... and uv itself at /root/.local/bin/uv.
+# Mounting the user's $HOME onto /root shadows both, breaking the venv at
+# /workspace/Megatron-Bridge/.venv/bin/python (its symlink target ENOENTs).
+HF_CACHE_HOST="${HF_HOME:-$HOME/.cache/huggingface}"
+mkdir -p "$HF_CACHE_HOST"
+
+MOUNTS="/lustre:/lustre"
+MOUNTS="$MOUNTS,$HF_CACHE_HOST:/root/.cache/huggingface"
 MOUNTS="$MOUNTS,$NEMOTRON_ROOT:/workspace/Nemotron"
 [[ -d "$CR_ROOT/cosmos-reason2"            ]] && MOUNTS="$MOUNTS,$CR_ROOT/cosmos-reason2:/workspace/cosmos-reason2"
 [[ -d "$CR_ROOT/sop-inference-bp/sop-inference-bp" ]] && MOUNTS="$MOUNTS,$CR_ROOT/sop-inference-bp/sop-inference-bp:/workspace/sop-inference-bp"
