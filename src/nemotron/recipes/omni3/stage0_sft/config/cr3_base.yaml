@@ -30,7 +30,14 @@ recipe:
   # ~56 GiB, Adam state ~84 GiB on top of the ~60 GiB model. LoRA drops
   # trainable to ~0.1-1 B and fits with ~5-8 GiB margin. Flip back to
   # *_sft_config only on a >= 2-node allocation (TP=4 EP=4 = 16 GPUs).
-  name: nemotron_omni_valor32k_peft_config
+  # Use the _energon_ infix variant — the in-repo peft_valor32k.yaml (which
+  # the Nemotron team ships) and valor32k.yaml both use _energon_*_config,
+  # so this is the registered name. The first PEFT attempt used
+  # `nemotron_omni_valor32k_peft_config` (no _energon_) and resolved past
+  # train.py's strict hasattr() check but ran with no LoRA wrapping and no
+  # language_model freezing — i.e. it's likely a stub / SFT alias in this
+  # build. The _energon_ variant is the one that actually wires LoRA.
+  name: nemotron_omni_valor32k_energon_peft_config
   step_func: nemotron_omni_step
 
 checkpoint:

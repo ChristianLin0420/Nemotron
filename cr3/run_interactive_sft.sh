@@ -172,5 +172,29 @@ export PYTHONPATH="/workspace/Nemotron/src${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$CR3_CKPT_SAVE"
 
 cd /workspace/Nemotron/src/nemotron/recipes/omni3/stage0_sft
+
+# ---------------------------------------------------------------------------
+# 6a. Preflight: enumerate the *_config callables actually registered in
+#     megatron.bridge.recipes.nemotron_omni so a name mismatch (e.g. missing
+#     _energon_ infix) is obvious BEFORE we burn ~3 minutes loading the model.
+#     Cheap (single Python import); ignore failures so it never blocks launch.
+# ---------------------------------------------------------------------------
+echo "=== preflight: registered nemotron_omni recipes ==="
+"$VENV_PYTHON" - <<'PY' || echo "  (skipped — could not introspect; not fatal)"
+import sys
+try:
+    import megatron.bridge.recipes.nemotron_omni as m
+except ImportError as e:
+    print(f"  ImportError: {e}")
+    sys.exit(0)
+configs = sorted(n for n in dir(m) if "config" in n and not n.startswith("_"))
+print(f"  {len(configs)} *_config callables:")
+for n in configs:
+    print(f"    - {n}")
+PY
+RESOLVED_NAME="$(grep -E '^\s*name:' /workspace/Nemotron/src/nemotron/recipes/omni3/stage0_sft/config/cr3_base.yaml | head -1 | awk '{print $2}')"
+echo "  cr3_base.yaml recipe.name = $RESOLVED_NAME"
+echo
+
 echo "=== torchrun ==="
 exec torchrun --nproc-per-node=8 train.py --config "$CR3_YAML"
