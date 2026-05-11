@@ -308,13 +308,7 @@ def _stratified_split(records: list[tuple[str, dict, Path]], val_fraction: float
 
 
 def _write_shard(shard_path: Path, samples: list[dict]) -> int:
-    """Write one Energon-compatible tar shard. Mirrors WebDatasetShardStage._write_one_shard.
-
-    Also writes the ``.tar.idx`` byte-offset index that Energon's
-    ``TarIndexReader`` opens at training time. Without this sidecar,
-    training fails with ``FileNotFoundError: train-shard-NNNNNN.tar.idx``
-    at the first batch fetch.
-    """
+    """Write one Energon-compatible tar shard. Mirrors WebDatasetShardStage._write_one_shard."""
     import webdataset as wds  # local — only available inside omni3-sft container
     written = 0
     shard_path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,27 +316,45 @@ def _write_shard(shard_path: Path, samples: list[dict]) -> int:
         for sample in samples:
             sink.write(sample)
             written += 1
-    _write_tar_index(shard_path)
     return written
 
 
-def _write_tar_index(shard_path: Path) -> None:
-    """Generate ``<shard>.tar.idx`` for Energon's random-access tar reader.
+def _write_tar_indexes(dataset_dir: Path) -> None:
+    """Generate ``<shard>.tar.idx`` sidecars for every ``*.tar`` in ``dataset_dir``.
 
-    Falls back gracefully if the megatron-energon API doesn't expose the
-    helper (the converter still produces usable shards; the operator
-    needs to run ``energon prepare`` manually in that case).
+    Energon's ``TarIndexReader`` opens ``<shard>.tar.idx`` at training time
+    to do random-access reads into the shard. Without these sidecars,
+    torchrun crashes at the first batch with
+    ``FileNotFoundError: train-shard-NNNNNN.tar.idx``.
+
+    Implementation: shells out to ``energon prepare <dir> --tar-index-only``
+    rather than re-implementing the tar-scan loop, so we stay in sync with
+    whatever version of megatron-energon the container ships. Falls back
+    to a warning if ``energon`` isn't on PATH — the operator can run the
+    command manually in that case.
     """
-    try:
-        from megatron.energon.flavors.webdataset.itar import write_tar_index  # type: ignore
-    except ImportError:
+    import shutil
+    import subprocess
+
+    if shutil.which("energon") is None:
         logger.warning(
-            "megatron.energon.flavors.webdataset.itar.write_tar_index not "
-            "available; run `energon prepare %s` after conversion to "
-            "generate the .tar.idx sidecars.", shard_path.parent
+            "`energon` CLI not found on PATH; run `energon prepare %s "
+            "--tar-index-only` manually to generate the .tar.idx sidecars.",
+            dataset_dir
         )
         return
-    write_tar_index(shard_path)
+
+    cmd = ["energon", "prepare", str(dataset_dir), "--tar-index-only"]
+    logger.info("Running %s", " ".join(cmd))
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.warning(
+            "energon prepare --tar-index-only exited %d. stdout=%s stderr=%s",
+            result.returncode, result.stdout.strip(), result.stderr.strip()
+        )
+        return
+    if result.stdout.strip():
+        logger.info("energon prepare: %s", result.stdout.strip())
 
 
 def _build_nv_meta(dataset_path: Path, split_shards: dict[str, list[str]]) -> int:
@@ -528,6 +540,8 @@ def convert_one(toml_path: Path, output: Path, val_fraction: float,
 
     _emit("train", train_recs)
     _emit("val",   val_recs)
+
+    _write_tar_indexes(output)
 
     total = _build_nv_meta(output, split_shards)
     logger.info("[%s] DONE: %d samples across %d shards under %s",
