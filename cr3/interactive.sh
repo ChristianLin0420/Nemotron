@@ -41,6 +41,10 @@ CONTAINER_IMAGE="${IMAGE}"
 # under /root/.local/share/uv/python/... and uv itself at /root/.local/bin/uv.
 # Mounting the user's $HOME onto /root shadows both, breaking the venv at
 # /workspace/Megatron-Bridge/.venv/bin/python (its symlink target ENOENTs).
+#
+# Pyxis on this cluster ALSO auto-mounts $HOME → /root by default even when
+# we don't include it in --container-mounts. We disable that below with
+# --no-container-mount-home so the image's /root stays intact.
 HF_CACHE_HOST="${HF_HOME:-$HOME/.cache/huggingface}"
 mkdir -p "$HF_CACHE_HOST"
 
@@ -68,5 +72,6 @@ srun \
     --time="$TIME" \
     --container-image="$CONTAINER_IMAGE" \
     --container-mounts="$MOUNTS" \
+    --no-container-mount-home \
     --container-writable \
     --pty bash -c "cd /workspace/Nemotron/cr3 && exec /bin/bash"
