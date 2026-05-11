@@ -16,6 +16,11 @@
 # ---------------------------------------------------------------------------
 : "${CR3_LUSTRE_HOME:=/lustre/fsw/portfolios/edgeai/users/$USER}"
 : "${CR3_LUSTRE_CACHE:=$CR3_LUSTRE_HOME/.cache}"
+# Export so cr3/interactive.sh's auto-source on the login node propagates
+# these into the container via srun --export=ALL. Without the export, $USER
+# inside the container (= 'root') would re-substitute the default to
+# /lustre/.../users/root, which doesn't exist and breaks mkdir.
+export CR3_LUSTRE_HOME CR3_LUSTRE_CACHE
 
 # ---------------------------------------------------------------------------
 # uv binary + caches (avoid ~/.local quota issues)
@@ -33,7 +38,7 @@ export XDG_CACHE_HOME=$CR3_LUSTRE_CACHE
 # ---------------------------------------------------------------------------
 export NEMORUN_HOME=$CR3_LUSTRE_CACHE/nemotron/nemo_run
 export NEMO_RUN_LOCAL_JOB_DIR=$NEMORUN_HOME
-mkdir -p "$NEMORUN_HOME"
+mkdir -p "$NEMORUN_HOME" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Nemotron build cache & training checkpoints. The container build dispatcher
@@ -48,4 +53,4 @@ mkdir -p "$NEMORUN_HOME"
 : "${OMNI3_SFT_SQSH:=$CR3_NEMOTRON_CACHE/containers/omni3-sft.sqsh}"
 : "${OMNI3_MEGATRON_CHECKPOINT:=$CR3_NEMOTRON_CACHE/checkpoints/nemotron_omni}"
 export CR3_NEMOTRON_CACHE CR3_ENERGON_ROOT CR3_CKPT_ROOT OMNI3_SFT_SQSH OMNI3_MEGATRON_CHECKPOINT
-mkdir -p "$CR3_NEMOTRON_CACHE" "$CR3_ENERGON_ROOT" "$CR3_CKPT_ROOT"
+mkdir -p "$CR3_NEMOTRON_CACHE" "$CR3_ENERGON_ROOT" "$CR3_CKPT_ROOT" 2>/dev/null || true
