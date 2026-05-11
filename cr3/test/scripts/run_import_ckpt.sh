@@ -30,15 +30,19 @@ FUSIONS_CACHE=/workspace/Megatron-Bridge/src/megatron/bridge/utils/__pycache__/f
 python3 - <<PY
 import re
 src = open("$FUSIONS_PY").read()
-patched = re.sub(
-    r"(def can_enable_gradient_accumulation_fusion\(\) -> bool:\n)([\s\S]*?)(?=\n\ndef |\Z)",
-    r"\1    return False\n",
-    src, count=1,
-)
-if patched == src:
-    raise SystemExit("fusions.py patch failed: regex did not match")
-open("$FUSIONS_PY", "w").write(patched)
-print("Patched", "$FUSIONS_PY")
+ALREADY_PATCHED = "def can_enable_gradient_accumulation_fusion() -> bool:\n    return False\n"
+if ALREADY_PATCHED in src:
+    print("fusions.py already patched, skipping")
+else:
+    patched = re.sub(
+        r"(def can_enable_gradient_accumulation_fusion\(\) -> bool:\n)([\s\S]*?)(?=\n\ndef |\Z)",
+        r"\1    return False\n",
+        src, count=1,
+    )
+    if patched == src:
+        raise SystemExit("fusions.py patch failed: regex did not match")
+    open("$FUSIONS_PY", "w").write(patched)
+    print("Patched", "$FUSIONS_PY")
 PY
 
 rm -f "$FUSIONS_CACHE"
