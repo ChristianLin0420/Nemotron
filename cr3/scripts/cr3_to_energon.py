@@ -527,8 +527,15 @@ def convert_one(toml_path: Path, output: Path, val_fraction: float,
 
             chatml = _build_chatml(human, asst, cfg.get("system_prompt"))
 
+            # Sanitize the split label: Energon's webdataset reader uses
+            # a regex that splits on the FIRST dot in a tar member name,
+            # so any dot in __key__ truncates the perceived sample id and
+            # breaks field access. Replace dots with underscores. We keep
+            # the original split label in our own .nv-meta/index.sqlite
+            # (see `_key_of` below) so this only affects the on-tar key.
+            sanitized_split = split_label.replace(".", "_")
             current_samples.append({
-                "__key__": f"{split_label}_{shard_idx:06d}_{sample_idx_in_shard:08d}",
+                "__key__": f"{sanitized_split}_{shard_idx:06d}_{sample_idx_in_shard:08d}",
                 "conversation.json": chatml.encode("utf-8"),
                 "video.mp4":         video_path.read_bytes(),
                 "audio.wav":         audio_path.read_bytes(),
