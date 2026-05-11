@@ -15,7 +15,10 @@
 #      cr3/test/scripts/run_train_smoke.sh.
 #   5. Install pydantic-settings into the Megatron-Bridge .venv if absent.
 #   6. torchrun the per-run YAML on 8 GPUs (TP=2, EP=4, PP=1; matches the
-#      assy17 sbatch wrappers).
+#      assy17 sbatch wrappers). Defaults to LoRA (peft_config) because the
+#      full-LM SFT recipe doesn't fit on a single 8 x A100-80 node — the
+#      DDP param buffer alone is ~56 GiB and Adam optimizer state adds
+#      ~84 GiB more. Switch via CR3_RECIPE for full SFT (needs >= 2 nodes).
 #
 # Usage:
 #     bash /workspace/Nemotron/cr3/run_interactive_sft.sh                          # default run
@@ -28,12 +31,19 @@
 #     CR3_LUSTRE_USER_ROOT       [/lustre/fs11/portfolios/edgeai/projects/edgeai_tao-ptm_image-foundation-model-clip/users/chrislin]
 #                                  Matches the path the assy17 sbatch wrappers
 #                                  hardcode; override for a different user.
+#     CR3_RECIPE                 [nemotron_omni_valor32k_peft_config]
+#                                  LoRA by default (only path that fits on
+#                                  1 node x 8 x A100-80). Set to
+#                                  nemotron_omni_valor32k_sft_config for
+#                                  full-LM SFT (needs >= 2 nodes).
 #     CR3_TRAIN_ITERS            [4000]
 #     CR3_LM_LR                  [1.5e-5]
 #     CR3_VAL_FRACTION           [0.1]
 #     CR3_SAMPLES_PER_SHARD      [100]
-#     OMNI3_MEGATRON_CHECKPOINT  required (no sensible default; same value
-#                                  the sbatch wrappers / env-setup.sh exports)
+#     OMNI3_MEGATRON_CHECKPOINT  [/workspace/Nemotron/checkpoints/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16]
+#                                  Megatron-format pretrain checkpoint dir
+#                                  (override if your import landed elsewhere,
+#                                  e.g. $CR3_NEMOTRON_CACHE/checkpoints/nemotron_omni).
 #
 # Outputs:
 #     $CR3_LUSTRE_USER_ROOT/datasets/cr3-nemotron/energon/$CR3_DATASET/$CR3_RUN
@@ -54,20 +64,27 @@ export CR3_ENERGON_PATH="$CR3_LUSTRE_USER_ROOT/datasets/cr3-nemotron/energon/$CR
 export CR3_CKPT_SAVE="$CR3_LUSTRE_USER_ROOT/cr3-nemotron/ckpt/$CR3_DATASET/$CR3_RUN"
 
 # Training knobs (mirror sbatch_<run>.sh defaults).
+# Recipe defaults to LoRA (peft_config) because full-LM SFT (sft_config) OOMs
+# on a single 8 x A100-80 node: ~28 B trainable -> ~56 GiB DDP param buffer
+# + ~84 GiB Adam state (unsharded at DP=1) doesn't fit alongside the ~60 GiB
+# model. LoRA drops trainable params to ~0.1-1 B, fitting with ~5-8 GiB margin.
+CR3_RECIPE="${CR3_RECIPE:-nemotron_omni_valor32k_peft_config}"
 export CR3_TRAIN_ITERS="${CR3_TRAIN_ITERS:-4000}"
 export CR3_LM_LR="${CR3_LM_LR:-1.5e-5}"
 CR3_VAL_FRACTION="${CR3_VAL_FRACTION:-0.1}"
 CR3_SAMPLES_PER_SHARD="${CR3_SAMPLES_PER_SHARD:-100}"
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 
-# OMNI3_MEGATRON_CHECKPOINT must be set by the caller (it's user-specific;
-# typical values: $CR3_NEMOTRON_CACHE/checkpoints/nemotron_omni after
-# env-setup.sh, or the path passed to `omni3 model import pretrain`).
-: "${OMNI3_MEGATRON_CHECKPOINT:?must be set; e.g. export OMNI3_MEGATRON_CHECKPOINT=\$CR3_LUSTRE_USER_ROOT/.cache/nemotron/checkpoints/nemotron_omni}"
+# OMNI3_MEGATRON_CHECKPOINT defaults to the in-container HF-imported Megatron
+# checkpoint dir (run_import_ckpt.sh's standard destination). Override if your
+# import landed on lustre, e.g.
+#     export OMNI3_MEGATRON_CHECKPOINT=$CR3_NEMOTRON_CACHE/checkpoints/nemotron_omni
+export OMNI3_MEGATRON_CHECKPOINT="${OMNI3_MEGATRON_CHECKPOINT:-/workspace/Nemotron/checkpoints/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16}"
 
 echo "=== resolved ==="
 echo "  run        : $CR3_RUN"
 echo "  dataset    : $CR3_DATASET"
+echo "  recipe     : $CR3_RECIPE"
 echo "  TOML       : $CR3_TOML"
 echo "  YAML       : $CR3_YAML"
 echo "  energon out: $CR3_ENERGON_PATH"
@@ -159,4 +176,5 @@ mkdir -p "$CR3_CKPT_SAVE"
 
 cd /workspace/Nemotron/src/nemotron/recipes/omni3/stage0_sft
 echo "=== torchrun ==="
-exec torchrun --nproc-per-node=8 train.py --config "$CR3_YAML"
+exec torchrun --nproc-per-node=8 train.py --config "$CR3_YAML" \
+    recipe.name="$CR3_RECIPE"
