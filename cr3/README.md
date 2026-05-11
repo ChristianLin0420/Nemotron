@@ -165,8 +165,12 @@ OOM triage ladder if 30B doesn't fit:
 
 End-to-end smoke that exercises the public docker image, the converter,
 and `run_train_smoke.sh` against one small split of the tp00302 dataset
-(`ds_1run.json`, 182 records). Produces a 10-iter loss curve and a
-training checkpoint at `cr3/test/ckpt/tp00302_smoke/iter_0000010/`.
+(`ds_1run.json`, 182 records). On A40-46 the smoke validates the
+pipeline up through 8-rank model load + DDP init; the actual training
+step **does not fit on A40** for the 30B-A3B full-SFT recipe (model +
+gradients + Adam optimizer states need ~65 GiB per rank, A40 has 44
+GiB). Use this section to verify converter / image / mount plumbing on
+A40, then use §3c to actually train on the A100-80 cluster.
 
 **Host prerequisites (one time):**
 
@@ -213,10 +217,104 @@ ls /workspace/Nemotron/cr3/test/energon/tp00302_smoke/.nv-meta/dataset.yaml   # 
 ls /workspace/Nemotron/cr3/test/ckpt/tp00302_smoke/iter_0000010/               # train OK
 ```
 
-**SLURM A100 reuse:** the same `run_tp00302_smoke.sh` runs unchanged on
-the cluster. Inside the sbatch's container, set
-`CR3_DATASET_ROOT_OVERRIDE=""` (lustre is mounted, paths resolve as-is)
-and point `CR3_ENERGON_PATH` and `CR3_CKPT_SAVE` at lustre dirs.
+### 3c. tp00302 SLURM interactive smoke (A100-80, 1 node × 8 GPU)
+
+Runs the **same** `run_tp00302_smoke.sh` inside an interactive SLURM
+allocation, this time against a real A100-80 node where 30B-A3B full
+SFT actually fits. Use this to validate the full training step (10
+iters with loss curve + iter_0000010 checkpoint) before submitting the
+sweep in §4.
+
+**1. Host (login node, one time per shell):**
+
+```bash
+# Source the per-user lustre env (uv paths, CR3_NEMOTRON_CACHE,
+# CR3_ENERGON_ROOT, CR3_CKPT_ROOT, OMNI3_SFT_SQSH, OMNI3_MEGATRON_CHECKPOINT)
+source <Nemotron>/cr3/env-setup.sh
+
+# Prerequisite (one-time, see SETUP.md):
+#   uv run nemotron omni3 build sft --run edgeai-cluster      # builds omni3-sft.sqsh
+#   uv run nemotron omni3 model import pretrain --run edgeai-cluster \
+#       --hf-model nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 \
+#       --megatron-path "$OMNI3_MEGATRON_CHECKPOINT"
+```
+
+**2. Host: allocate the interactive container (~30s to land in shell):**
+
+```bash
+bash <Nemotron>/cr3/interactive.sh
+# Lands you at /workspace/Nemotron/cr3 inside omni3-sft.sqsh, with
+#   $HOME              -> /root
+#   /lustre            -> /lustre (datasets, checkpoints)
+#   <Nemotron>/        -> /workspace/Nemotron
+#   <cosmos-reason2>/  -> /workspace/cosmos-reason2  (if present)
+```
+
+**3. Container: configure the smoke env vars:**
+
+```bash
+# Tell the runner that lustre is mounted (no /datasets remap needed).
+export CR3_DATASET_ROOT_OVERRIDE=""
+
+# Output dirs on lustre (so checkpoints survive past the allocation):
+export CR3_ENERGON_PATH="$CR3_ENERGON_ROOT/tp00302/tp00302_smoke"
+export CR3_CKPT_SAVE="$CR3_CKPT_ROOT/tp00302/tp00302_smoke"
+
+# Megatron checkpoint imported in step 1 — env-setup.sh already set this:
+echo "ckpt_in : $OMNI3_MEGATRON_CHECKPOINT"
+
+# A100-80 can afford the larger smoke seq length (the A40-default of 1024
+# leaves throughput on the table; 4096 matches the eventual sweep).
+export CR3_SEQ_LENGTH=4096
+export CR3_GLOBAL_BATCH_SIZE=8
+
+# Optional: keep the rest of the defaults (10 iters, lr 1.5e-5).
+export CR3_TRAIN_ITERS=10
+```
+
+**4. Container: run the smoke (~5-10 min on A100-80):**
+
+```bash
+bash /workspace/Nemotron/cr3/test/scripts/run_tp00302_smoke.sh
+```
+
+The runner converts the TOML → Energon at `$CR3_ENERGON_PATH` (skipped if
+`.nv-meta/dataset.yaml` already exists), then delegates to
+`run_train_smoke.sh` for 10 torchrun iterations.
+
+**5. Container: verify success:**
+
+```bash
+ls "$CR3_ENERGON_PATH/.nv-meta/dataset.yaml"        # convert OK
+ls "$CR3_CKPT_SAVE/iter_0000010/"                    # train OK
+```
+
+**Iteration ideas (still in the interactive container):**
+
+```bash
+# Different split — point CR3_TOML at any TOML you've authored.
+export CR3_TOML=/workspace/Nemotron/cr3/test/tp00302_smoke.toml
+export CR3_ENERGON_PATH="$CR3_ENERGON_ROOT/tp00302/tp00302_smoke_v2"
+
+# Longer run — bump iters + match cr3_base.yaml's seq_length to test
+# the production setting.
+export CR3_TRAIN_ITERS=200
+export CR3_SEQ_LENGTH=8192     # cr3_base.yaml's default
+
+bash /workspace/Nemotron/cr3/test/scripts/run_tp00302_smoke.sh
+```
+
+**Why A40 doesn't suffice (for reference):** with TP=2 / EP=4 / PP=1
+the dense LM is held on each TP rank (~3-5 GiB BF16) and the MoE
+experts are split across EP=4 ranks (~7 GiB each). On top of that,
+Adam optimizer states (FP32 master + m + v = 6 bytes/param) for the
+local-DP-rank's parameter shard land at ~18 GiB per rank even with
+`use_distributed_optimizer=True`. Plus BF16 grads, FP32 main-param
+mirror created during DDP init, etc. — the resident-then-needs-grow
+buffer overflows the A40's 44 GiB ceiling. A100-80 has the headroom.
+Switching parallelism to TP=8 / EP=1 might fit on A40 but breaks the
+checkpoint's TP=2/EP=4 shard layout, so the cluster path is the
+straightforward fix.
 
 ### 4. Submit the full sweep
 

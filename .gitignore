@@ -105,3 +105,13 @@ main.py
 
 # Documentation build
 docs/_build/
+docs/superpowers/
+
+# dataset
+datasets/
+
+# CR3 smoke-test outputs
+cr3/test/energon/
+cr3/test/ckpt/
+cr3/test/logs/
+cr3/test/output/

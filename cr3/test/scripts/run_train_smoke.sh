@@ -8,9 +8,15 @@
 #   $CR3_CKPT_SAVE               directory to write iter_*/ training ckpts
 #
 # A40 (46 GB) is below the cr3_base.yaml's A100-80 target, so we drop:
-#   * dataset.seq_length / model.seq_length 8192 -> 4096
-#   * train.global_batch_size 32 -> 8 (matches the README smoke-test value)
+#   * dataset.seq_length / model.seq_length 8192 -> $CR3_SEQ_LENGTH (default 4096)
+#   * train.global_batch_size 32 -> $CR3_GLOBAL_BATCH_SIZE (default 8)
 # and keep TP=2 EP=4 (= 8 GPUs).
+#
+# Override knobs:
+#   CR3_SEQ_LENGTH         dataset.seq_length AND model.seq_length        (default 4096)
+#   CR3_GLOBAL_BATCH_SIZE  train.global_batch_size                         (default 8)
+# A40 needs CR3_SEQ_LENGTH=1024 to keep activations under the 46 GB budget;
+# A100-80 can run at CR3_SEQ_LENGTH=4096 or above. Set these in the caller.
 #
 # Re-applies the gradient-accum-fusion patch on every container boot because
 # the container is launched with --rm (image is pristine each time).
@@ -62,6 +68,8 @@ VENV_PYTHON=/workspace/Megatron-Bridge/.venv/bin/python
 : "${CR3_CKPT_SAVE:?must be set}"
 export CR3_TRAIN_ITERS="${CR3_TRAIN_ITERS:-10}"
 export CR3_LM_LR="${CR3_LM_LR:-1.5e-5}"
+export CR3_SEQ_LENGTH="${CR3_SEQ_LENGTH:-4096}"
+export CR3_GLOBAL_BATCH_SIZE="${CR3_GLOBAL_BATCH_SIZE:-8}"
 export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 
 mkdir -p "$CR3_CKPT_SAVE"
@@ -78,8 +86,8 @@ echo
 exec torchrun --nproc-per-node=8 train.py \
     --config config/cr3_base.yaml \
     train.train_iters="$CR3_TRAIN_ITERS" \
-    train.global_batch_size=8 \
-    dataset.seq_length=4096 \
-    model.seq_length=4096 \
+    train.global_batch_size="$CR3_GLOBAL_BATCH_SIZE" \
+    dataset.seq_length="$CR3_SEQ_LENGTH" \
+    model.seq_length="$CR3_SEQ_LENGTH" \
     model.recompute_num_layers=1 \
     checkpoint.save_interval=10

@@ -21,6 +21,8 @@
 #   CR3_LM_LR                  1.5e-5
 #   CR3_VAL_FRACTION           0.1
 #   CR3_SAMPLES_PER_SHARD      50
+#   CR3_SEQ_LENGTH             1024     (A40-safe default; raise to 4096 on A100-80)
+#   CR3_GLOBAL_BATCH_SIZE      8
 
 set -euo pipefail
 
@@ -33,6 +35,8 @@ CR3_TRAIN_ITERS="${CR3_TRAIN_ITERS:-10}"
 CR3_LM_LR="${CR3_LM_LR:-1.5e-5}"
 CR3_VAL_FRACTION="${CR3_VAL_FRACTION:-0.1}"
 CR3_SAMPLES_PER_SHARD="${CR3_SAMPLES_PER_SHARD:-50}"
+CR3_SEQ_LENGTH="${CR3_SEQ_LENGTH:-1024}"
+CR3_GLOBAL_BATCH_SIZE="${CR3_GLOBAL_BATCH_SIZE:-8}"
 
 # ---------------------------------------------------------------------------
 # 0. Sanity checks (fail fast with a readable error)
@@ -71,6 +75,6 @@ fi
 #    global_batch_size=8, recompute_num_layers=1).
 # ---------------------------------------------------------------------------
 export OMNI3_MEGATRON_CHECKPOINT CR3_ENERGON_PATH CR3_CKPT_SAVE
-export CR3_TRAIN_ITERS CR3_LM_LR
-echo "[train] -> run_train_smoke.sh (iters=$CR3_TRAIN_ITERS, lm_lr=$CR3_LM_LR)"
+export CR3_TRAIN_ITERS CR3_LM_LR CR3_SEQ_LENGTH CR3_GLOBAL_BATCH_SIZE
+echo "[train] -> run_train_smoke.sh (iters=$CR3_TRAIN_ITERS, lm_lr=$CR3_LM_LR, seq=$CR3_SEQ_LENGTH, gbs=$CR3_GLOBAL_BATCH_SIZE)"
 exec bash /workspace/Nemotron/cr3/test/scripts/run_train_smoke.sh
