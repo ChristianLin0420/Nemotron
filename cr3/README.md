@@ -161,6 +161,63 @@ OOM triage ladder if 30B doesn't fit:
 3. `model.optimizer.offload_to_cpu=true`
 4. Switch to LoRA via `recipe.name=nemotron_omni_valor32k_peft_config` in `cr3_base.yaml`
 
+### 3b. tp00302 local smoke (docker on local 8× A40)
+
+End-to-end smoke that exercises the public docker image, the converter,
+and `run_train_smoke.sh` against one small split of the tp00302 dataset
+(`ds_1run.json`, 182 records). Produces a 10-iter loss curve and a
+training checkpoint at `cr3/test/ckpt/tp00302_smoke/iter_0000010/`.
+
+**Host prerequisites (one time):**
+
+```bash
+# 1a. Either pull the prebuilt image …
+docker pull christianlin0420/omni3-sft:public
+
+# 1b. … OR build locally (~30-60 min, produces nemotron/omni3-sft:public)
+bash cr3/build_omni3_sft_public.sh
+export OMNI3_SFT_IMAGE=nemotron/omni3-sft:public
+
+# 2. Point docker-interactive.sh at the in-repo datasets dir.
+#    The default ($CR3_DATASETS_ROOT=/localhome/$USER/datasets) does NOT
+#    contain tp00302 — your tp00302 copy is under Nemotron/datasets/.
+export CR3_DATASETS_ROOT=/localhome/$USER/Nemotron/datasets
+
+# 3. Enter the container
+bash cr3/docker-interactive.sh
+```
+
+**Container side (one time, ~30 min):** convert HF → Megatron format.
+
+```bash
+bash /workspace/Nemotron/cr3/test/scripts/run_import_ckpt.sh \
+    /workspace/Nemotron/checkpoints/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 \
+    /workspace/Nemotron/checkpoints/megatron/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16
+```
+
+**Container side (smoke, ~10 min, idempotent):**
+
+```bash
+bash /workspace/Nemotron/cr3/test/scripts/run_tp00302_smoke.sh
+```
+
+The runner converts the TOML → Energon, then delegates to
+`run_train_smoke.sh` for 10 iters with A40-safe overrides
+(`seq_length=4096`, `global_batch_size=8`, `recompute_num_layers=1`).
+
+**Verifying success:**
+
+```bash
+# inside the container
+ls /workspace/Nemotron/cr3/test/energon/tp00302_smoke/.nv-meta/dataset.yaml   # convert OK
+ls /workspace/Nemotron/cr3/test/ckpt/tp00302_smoke/iter_0000010/               # train OK
+```
+
+**SLURM A100 reuse:** the same `run_tp00302_smoke.sh` runs unchanged on
+the cluster. Inside the sbatch's container, set
+`CR3_DATASET_ROOT_OVERRIDE=""` (lustre is mounted, paths resolve as-is)
+and point `CR3_ENERGON_PATH` and `CR3_CKPT_SAVE` at lustre dirs.
+
 ### 4. Submit the full sweep
 
 ```bash

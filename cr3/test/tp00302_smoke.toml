@@ -1,0 +1,34 @@
+# Local-smoke / cross-env CR3 TOML for tp00302.
+#
+# Path strategy:
+#   Paths are written under the canonical lliou prefix
+#       /lustre/fsw/portfolios/edgeai/users/lliou/multi-modality-research/VILA/sample_data/
+#   so that cr3_to_energon.py's --dataset-root-override can rewrite them
+#   to /datasets at runtime (local docker), or leave them as-is when
+#   lustre is mounted (SLURM A100).
+#
+# Pipeline (run via cr3/test/scripts/run_tp00302_smoke.sh inside the
+# omni3-sft container):
+#   1. cr3_to_energon.py --cr3-toml ... --dataset-root-override /datasets
+#   2. run_train_smoke.sh  (10 iters, OOM-safe overrides for A40)
+#
+# The converter only reads [train.train_policy.dataset.*] and [custom.*];
+# other CR3/cosmos-rl sections (policy, validation, parallelism) are
+# intentionally omitted because they are unused here.
+
+[train.train_policy.dataset]
+name = [
+    "/lustre/fsw/portfolios/edgeai/users/lliou/multi-modality-research/VILA/sample_data/tp00302/augmented/ds_1run/ds_1run.json",
+]
+split = [
+    "TP00302_ds1run",
+]
+test_size = 0.1
+
+[custom.vision]
+fps = 8
+max_frames = 40
+total_pixels = 16572416
+
+[custom]
+system_prompt = "Answer the questions."
