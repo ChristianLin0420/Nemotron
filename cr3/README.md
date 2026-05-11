@@ -229,25 +229,31 @@ sweep in §4.
 
 ```bash
 # Source the per-user lustre env (uv paths, CR3_NEMOTRON_CACHE,
-# CR3_ENERGON_ROOT, CR3_CKPT_ROOT, OMNI3_SFT_SQSH, OMNI3_MEGATRON_CHECKPOINT)
+# CR3_ENERGON_ROOT, CR3_CKPT_ROOT, OMNI3_MEGATRON_CHECKPOINT)
 source <Nemotron>/cr3/env-setup.sh
 
-# Prerequisite (one-time, see SETUP.md):
-#   uv run nemotron omni3 build sft --run edgeai-cluster      # builds omni3-sft.sqsh
+# Prerequisite (one-time): import the HF GA checkpoint to Megatron format.
+# interactive.sh pulls the docker image directly via pyxis docker:// (no
+# .sqsh build step required).
 #   uv run nemotron omni3 model import pretrain --run edgeai-cluster \
 #       --hf-model nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-BF16 \
 #       --megatron-path "$OMNI3_MEGATRON_CHECKPOINT"
 ```
 
-**2. Host: allocate the interactive container (~30s to land in shell):**
+**2. Host: allocate the interactive container (~30s to land in shell;
+~5-10 min on first pyxis pull of the docker image):**
 
 ```bash
 bash <Nemotron>/cr3/interactive.sh
-# Lands you at /workspace/Nemotron/cr3 inside omni3-sft.sqsh, with
+# Lands you at /workspace/Nemotron/cr3 inside christianlin0420/omni3-sft:public, with
 #   $HOME              -> /root
 #   /lustre            -> /lustre (datasets, checkpoints)
 #   <Nemotron>/        -> /workspace/Nemotron
 #   <cosmos-reason2>/  -> /workspace/cosmos-reason2  (if present)
+#
+# To override the image (e.g., a locally-built tag):
+#   export OMNI3_SFT_IMAGE=nemotron/omni3-sft:public
+#   bash <Nemotron>/cr3/interactive.sh
 ```
 
 **3. Container: configure the smoke env vars:**
