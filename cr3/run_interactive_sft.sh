@@ -15,10 +15,13 @@
 #      cr3/test/scripts/run_train_smoke.sh.
 #   5. Install pydantic-settings into the Megatron-Bridge .venv if absent.
 #   6. torchrun the per-run YAML on 8 GPUs (TP=2, EP=4, PP=1; matches the
-#      assy17 sbatch wrappers). Defaults to LoRA (peft_config) because the
-#      full-LM SFT recipe doesn't fit on a single 8 x A100-80 node — the
-#      DDP param buffer alone is ~56 GiB and Adam optimizer state adds
-#      ~84 GiB more. Switch via CR3_RECIPE for full SFT (needs >= 2 nodes).
+#      assy17 sbatch wrappers). The recipe is whatever cr3_base.yaml's
+#      `recipe.name` resolves to — currently LoRA (peft_config). Full-LM SFT
+#      (sft_config) doesn't fit on a single 8 x A100-80 node (DDP buffer
+#      ~56 GiB + Adam state ~84 GiB on top of the ~60 GiB model); flip
+#      cr3_base.yaml back to sft_config only on a >= 2-node allocation.
+#      Hydra struct mode means recipe.name CANNOT be overridden via CLI
+#      (the key is consumed at dispatch); edit cr3_base.yaml directly.
 #
 # Usage:
 #     bash /workspace/Nemotron/cr3/run_interactive_sft.sh                          # default run
@@ -31,11 +34,6 @@
 #     CR3_LUSTRE_USER_ROOT       [/lustre/fs11/portfolios/edgeai/projects/edgeai_tao-ptm_image-foundation-model-clip/users/chrislin]
 #                                  Matches the path the assy17 sbatch wrappers
 #                                  hardcode; override for a different user.
-#     CR3_RECIPE                 [nemotron_omni_valor32k_peft_config]
-#                                  LoRA by default (only path that fits on
-#                                  1 node x 8 x A100-80). Set to
-#                                  nemotron_omni_valor32k_sft_config for
-#                                  full-LM SFT (needs >= 2 nodes).
 #     CR3_TRAIN_ITERS            [4000]
 #     CR3_LM_LR                  [1.5e-5]
 #     CR3_VAL_FRACTION           [0.1]
@@ -64,11 +62,10 @@ export CR3_ENERGON_PATH="$CR3_LUSTRE_USER_ROOT/datasets/cr3-nemotron/energon/$CR
 export CR3_CKPT_SAVE="$CR3_LUSTRE_USER_ROOT/cr3-nemotron/ckpt/$CR3_DATASET/$CR3_RUN"
 
 # Training knobs (mirror sbatch_<run>.sh defaults).
-# Recipe defaults to LoRA (peft_config) because full-LM SFT (sft_config) OOMs
-# on a single 8 x A100-80 node: ~28 B trainable -> ~56 GiB DDP param buffer
-# + ~84 GiB Adam state (unsharded at DP=1) doesn't fit alongside the ~60 GiB
-# model. LoRA drops trainable params to ~0.1-1 B, fitting with ~5-8 GiB margin.
-CR3_RECIPE="${CR3_RECIPE:-nemotron_omni_valor32k_peft_config}"
+# The active recipe is whatever cr3_base.yaml:recipe.name resolves to
+# (Hydra consumes that key at dispatch, so it cannot be overridden via CLI).
+# We default to LoRA (peft_config) because full-LM SFT (sft_config) doesn't
+# fit on a single 8 x A100-80 node — see cr3_base.yaml's comment.
 export CR3_TRAIN_ITERS="${CR3_TRAIN_ITERS:-4000}"
 export CR3_LM_LR="${CR3_LM_LR:-1.5e-5}"
 CR3_VAL_FRACTION="${CR3_VAL_FRACTION:-0.1}"
@@ -84,7 +81,7 @@ export OMNI3_MEGATRON_CHECKPOINT="${OMNI3_MEGATRON_CHECKPOINT:-/workspace/Nemotr
 echo "=== resolved ==="
 echo "  run        : $CR3_RUN"
 echo "  dataset    : $CR3_DATASET"
-echo "  recipe     : $CR3_RECIPE"
+echo "  recipe     : $(grep -E '^\s*name:' /workspace/Nemotron/src/nemotron/recipes/omni3/stage0_sft/config/cr3_base.yaml | head -1 | awk '{print $2}')"
 echo "  TOML       : $CR3_TOML"
 echo "  YAML       : $CR3_YAML"
 echo "  energon out: $CR3_ENERGON_PATH"
@@ -176,5 +173,4 @@ mkdir -p "$CR3_CKPT_SAVE"
 
 cd /workspace/Nemotron/src/nemotron/recipes/omni3/stage0_sft
 echo "=== torchrun ==="
-exec torchrun --nproc-per-node=8 train.py --config "$CR3_YAML" \
-    recipe.name="$CR3_RECIPE"
+exec torchrun --nproc-per-node=8 train.py --config "$CR3_YAML"

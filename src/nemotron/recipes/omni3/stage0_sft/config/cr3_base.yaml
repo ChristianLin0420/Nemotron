@@ -25,7 +25,12 @@ run:
       PYTORCH_ALLOC_CONF: expandable_segments:True
 
 recipe:
-  name: nemotron_omni_valor32k_sft_config
+  # LoRA by default — full-LM SFT (nemotron_omni_valor32k_sft_config) doesn't
+  # fit on a single 8 x A100-80 node: trainable params -> ~28 B, DDP buffer
+  # ~56 GiB, Adam state ~84 GiB on top of the ~60 GiB model. LoRA drops
+  # trainable to ~0.1-1 B and fits with ~5-8 GiB margin. Flip back to
+  # *_sft_config only on a >= 2-node allocation (TP=4 EP=4 = 16 GPUs).
+  name: nemotron_omni_valor32k_peft_config
   step_func: nemotron_omni_step
 
 checkpoint:
