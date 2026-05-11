@@ -388,6 +388,36 @@ def _first_tar_member_has_dotted_stem(dataset_dir: Path) -> bool:
     return "." in stem
 
 
+def _is_safe_to_rmtree_as_dataset(path: Path) -> bool:
+    """Refuse to rmtree a directory we don't recognize as cr3_to_energon output.
+
+    A cr3_to_energon.py output dir contains exactly:
+      * ``.nv-meta/``     (written by ``_build_nv_meta`` at the end)
+      * ``.audio_cache/`` (default ``--tmp-audio-dir``)
+      * ``train-shard-*.tar`` / ``val-shard-*.tar`` / ``test-shard-*.tar``
+        and their ``.tar.idx`` sidecars
+      * an empty dir (mid-run, before any shards have been flushed)
+
+    Anything else and we abort with a clear error rather than wipe it.
+    Motivation: a previously empty ``$CR3_ENERGON_PATH`` shell-expands
+    ``--output ""``, which argparse converts to ``Path(".")``, which
+    ``.resolve()`` turns into the caller's CWD. Without this check the
+    converter happily rmtree's whatever it lands on (e.g. it once nuked
+    a container's ``/workspace/Megatron-Bridge`` working tree).
+    """
+    if not path.is_dir():
+        return True
+    allowed_dirs = {".nv-meta", ".audio_cache"}
+    for entry in path.iterdir():
+        name = entry.name
+        if entry.is_dir() and name in allowed_dirs:
+            continue
+        if entry.is_file() and (name.endswith(".tar") or name.endswith(".tar.idx")):
+            continue
+        return False
+    return True
+
+
 def _build_nv_meta(dataset_path: Path, split_shards: dict[str, list[str]]) -> int:
     """Write .nv-meta/ — index.sqlite, .info.yaml, split.yaml, dataset.yaml.
 
@@ -491,6 +521,15 @@ def convert_one(toml_path: Path, output: Path, val_fraction: float,
                 toml_path.name, len(train_recs), len(val_recs), val_fraction)
 
     if output.exists():
+        if not _is_safe_to_rmtree_as_dataset(output):
+            raise RuntimeError(
+                f"Refusing to wipe --output={output}: it does not look like a "
+                f"cr3_to_energon.py output directory (contains entries other "
+                f"than .nv-meta/.audio_cache/*.tar/*.tar.idx). This usually "
+                f"means $CR3_ENERGON_PATH (or the path you passed) is unset "
+                f"or wrong and resolved to a real directory. Set the variable "
+                f"explicitly or `rm -rf` the path manually before re-running."
+            )
         logger.warning("Removing existing output dir: %s", output)
         shutil.rmtree(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -624,8 +663,14 @@ def main() -> int:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     if args.cr3_toml is not None:
-        if not args.output:
-            ap.error("--output required with --cr3-toml")
+        # `Path("")` becomes `Path(".")` (truthy), so `not args.output` does
+        # NOT catch `--output ""` — an empty shell-expansion of an unset env
+        # var. Explicitly reject the empty/cwd cases before we let
+        # `.resolve()` turn them into the caller's CWD.
+        if args.output is None or str(args.output).strip() in ("", "."):
+            ap.error("--output required and must be a non-empty, non-CWD path "
+                     "with --cr3-toml (got %r; likely $CR3_ENERGON_PATH was unset)"
+                     % (str(args.output) if args.output is not None else None))
         tmp_audio_dir = args.tmp_audio_dir or args.output / ".audio_cache"
         tmp_audio_dir.mkdir(parents=True, exist_ok=True)
         result = convert_one(
@@ -638,8 +683,10 @@ def main() -> int:
         return 0
 
     # Batch mode
-    if not args.output_root:
-        ap.error("--output-root required with --cr3-tomls-dir")
+    if args.output_root is None or str(args.output_root).strip() in ("", "."):
+        ap.error("--output-root required and must be a non-empty, non-CWD path "
+                 "with --cr3-tomls-dir (got %r)"
+                 % (str(args.output_root) if args.output_root is not None else None))
     out_root: Path = args.output_root.resolve()
     src_root: Path = args.cr3_tomls_dir.resolve()
 
