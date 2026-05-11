@@ -7,9 +7,14 @@
 #   * Smoke-test torchrun training on one node before the full sweep
 #   * Inspect Megatron-Bridge / Energon Python APIs interactively
 #
-# Source the env helper first so $CR3_LUSTRE_HOME resolves:
-#   source Nemotron/cr3/env-setup.sh
-#   bash   Nemotron/cr3/interactive.sh
+# Usage:
+#   bash Nemotron/cr3/interactive.sh
+#
+# This script auto-sources cr3/env-setup.sh before srun so that
+# $CR3_ENERGON_ROOT, $CR3_CKPT_ROOT, $OMNI3_MEGATRON_CHECKPOINT, etc.
+# propagate into the container via srun's --export=ALL default. No
+# need to source env-setup.sh manually first (re-sourcing is safe
+# because env-setup.sh uses ``: "${VAR:=default}"``).
 #
 # Container: pyxis pulls the docker image directly (no .sqsh build step).
 # First run on a node caches the image under enroot's runtime root; later
@@ -25,6 +30,14 @@ TIME="${CR3_INTERACTIVE_TIME:-04:00:00}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NEMOTRON_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"     # .../Nemotron
 CR_ROOT="$(cd "$NEMOTRON_ROOT/.." && pwd)"        # .../cr (parent of Nemotron, cosmos-reason2, sop-inference-bp)
+
+# Pull CR3_* / OMNI3_* / NEMORUN_HOME / CR3_LUSTRE_HOME etc. into our
+# environment so srun --export=ALL (default) sends them into the
+# container. Idempotent if the user already sourced env-setup.sh.
+if [[ -f "$SCRIPT_DIR/env-setup.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/env-setup.sh"
+fi
 
 # Container image: docker registry reference. pyxis resolves docker:// URIs
 # transparently against Docker Hub and caches the unpacked rootfs per-node.
