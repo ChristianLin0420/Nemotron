@@ -53,7 +53,14 @@ model:
   use_distributed_optimizer: true
   recompute_granularity: full
   recompute_method: uniform
-  freeze_language_model: false
+  # freeze_language_model MUST track the recipe: PEFT (LoRA) requires the LM
+  # base weights to be frozen so only adapters carry grads; if this stays
+  # False under a *_peft_config recipe, LoRA gets stacked on a still-trainable
+  # LM, DDP sees ~28 B trainable params, and the param-data buffer alloc
+  # OOMs at ~55.83 GiB — exactly the symptom we hit on the first PEFT run.
+  # Flip to false ONLY when switching `recipe.name` back to *_sft_config
+  # (which itself only fits on a >= 2-node allocation; see comment above).
+  freeze_language_model: true
   freeze_vision_model: true
   freeze_vision_projection: false
   freeze_sound_encoder: true
